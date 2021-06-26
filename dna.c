@@ -1,5 +1,3 @@
-// Eduardo Vudala Senoski GRR20195689
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
