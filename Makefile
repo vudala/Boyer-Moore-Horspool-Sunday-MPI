@@ -1,5 +1,3 @@
-# Eduardo Vudala Senoski GRR20195689
-
 FLAGS=-g -O3
 
 LIBS=-lm

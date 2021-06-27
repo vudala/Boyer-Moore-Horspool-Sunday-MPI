@@ -47,7 +47,8 @@ int bmhs(char *string, char *substr) {
 
 
 // Lê as queries que serão buscadas
-void read_queries(FILE *file, char **queries, char **queries_descs){
+void read_queries(FILE *file, char **queries, char **queries_descs)
+{
     char *str = (char*) malloc(sizeof(char) * MAX_SUBSTRING);
 	must_alloc(str, "str");
     int query_id = 0;
@@ -63,11 +64,15 @@ void read_queries(FILE *file, char **queries, char **queries_descs){
             query_id++;
         }
     }
+
+	free(str);
+	str = NULL;
 }
 
 
 // Lê a database e a separa em databases menores
-void read_database(FILE *file, char **bases, char **descs){
+void read_database(FILE *file, char **bases, char **descs)
+{
     char *line = (char*) malloc(sizeof(char) * MAX_SUBSTRING);
 	must_alloc(line, "line");
 	int base_id = 0;
@@ -84,10 +89,12 @@ void read_database(FILE *file, char **bases, char **descs){
     }
 
 	free(line);
+	line = NULL;
 }
 
-
-void solve_chunk(char **bases, char **descs, char **queries, unsigned int n_queries, char **query_descs, char **query_results){
+// Aplica o BMHS sobre um subvetor de queries de tamanho n
+void solve_chunk(char **bases, char **descs, char **queries, unsigned int n_queries, char **query_descs, char **query_results)
+{
 	int result, found;
 	char *aux = (char*) malloc(sizeof(char) * MAX_WORDSIZE);
 	must_alloc(aux, "aux");
@@ -110,32 +117,24 @@ void solve_chunk(char **bases, char **descs, char **queries, unsigned int n_quer
 			strcat(query_results[i], aux);
 		}
 	}
+
+	free(aux);
+	aux = NULL;
 }
 
-void **alloc_matrix(unsigned int m, unsigned int n, unsigned int element_size){
-	void **matrix = malloc(sizeof(void*) * m);
-	must_alloc(matrix, "matrix");
-
-	for (int i = 0; i < m; i++){
-		matrix[i] = malloc(element_size * n);
-		must_alloc(matrix[i], "matrix[i]");
-	}
-
-	return matrix;
-}
-
-// determina o tamanho da fatia de queries baseado no rank
-int rank_limit(unsigned int rank, unsigned int n_procs, unsigned int slice){
+// Determina o tamanho da fatia de queries baseado no rank
+int rank_limit(unsigned int rank, unsigned int n_procs, unsigned int slice)
+{
 	return rank == n_procs - 1 ? NUM_QUERIES - (n_procs - 1) * slice : (rank == 0 ? NUM_QUERIES : slice);
 }
 
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
+	MPI_Init(&argc, &argv);
 
 	int rank, n_procs;
 	MPI_Status status;
-
-	MPI_Init(&argc, &argv);
 
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &n_procs);
@@ -154,15 +153,18 @@ int main(int argc, char **argv) {
 	int buff_size = DNA_SECTIONS * (MAX_WORDSIZE + MAX_DATABASE) + (rank_limit(n_procs - 1, n_procs, slice)) * (MAX_SUBSTRING + MAX_WORDSIZE);
 	char *buffer = (char*) malloc(sizeof(char) * buff_size);
 	must_alloc(buffer, "buffer");
-
-	if (rank == 0) {
+	
+	if (rank == 0)
+	{
 		FILE *fdatabase = fopen("dna.in", "r");
 		must_alloc(fdatabase, "fdatabase");
 
 		FILE *fquery = fopen("query.in", "r");
 		must_alloc(fquery, "fquery");
 
+		// Lê a database
 		read_database(fdatabase, bases, descs);
+		// Lê as queries
 		read_queries(fquery, queries, query_descs);
 
 		fclose(fdatabase);
@@ -170,32 +172,42 @@ int main(int argc, char **argv) {
 
 		MPI_Request req;
 		int pos;
-		for (int i = 1; i < n_procs; i++){
+
+		// Fatia e empacota as queries e as bases para serem enviadas a todos os outros processos
+		for (int i = 1; i < n_procs; i++)
+		{
 			int r_limit = rank_limit(i, n_procs, slice);
 			pos = 0;
 
-			for (int j = 0; j < DNA_SECTIONS; j++){
+			for (int j = 0; j < DNA_SECTIONS; j++)
+			{
 				MPI_Pack(bases[j], MAX_DATABASE, MPI_CHAR, buffer, buff_size, &pos, MPI_COMM_WORLD);
 				MPI_Pack(descs[j], MAX_WORDSIZE, MPI_CHAR, buffer, buff_size, &pos, MPI_COMM_WORLD);
 			}
-			for (int j = i * slice; j < i * slice + r_limit; j++){
+
+			for (int j = i * slice; j < i * slice + r_limit; j++)
+			{
 				MPI_Pack(queries[j], MAX_SUBSTRING, MPI_CHAR, buffer, buff_size, &pos, MPI_COMM_WORLD);
 				MPI_Pack(query_descs[j], MAX_WORDSIZE, MPI_CHAR, buffer, buff_size, &pos, MPI_COMM_WORLD);
 			}
 		
-			MPI_Isend(buffer, buff_size, MPI_PACKED, i, STD_TAG, MPI_COMM_WORLD, &req);
+			MPI_Send(buffer, buff_size, MPI_PACKED, i, STD_TAG, MPI_COMM_WORLD);
 		}
 
+		// Aplica o BMHS sobre a primeira fatia de queries
 		solve_chunk(bases, descs, queries, slice, query_descs, query_results);
 	
-		for (int i = 1; i < n_procs; i++){
+		// Desempacota os dados processados pelos outros processos
+		for (int i = 1; i < n_procs; i++)
+		{
 			pos = 0;
 			int r_limit = rank_limit(i, n_procs, slice);
 			MPI_Recv(buffer, buff_size, MPI_PACKED, i, STD_TAG, MPI_COMM_WORLD, &status);
 			for (int j = i * slice; j < i * slice + r_limit; j++)
 				MPI_Unpack(buffer, buff_size, &pos, query_results[j], MAX_SUBSTRING, MPI_CHAR, MPI_COMM_WORLD);
 		}
-
+		
+		// Escreve os resultados em fout
 		FILE *fout = fopen("dna.out", "w");
 		must_alloc(fout, "fout");
 
@@ -205,138 +217,57 @@ int main(int argc, char **argv) {
 		fclose(fout);
 	}
 	else {
+		// Desempacota as informações enviadas pelo processo root
 		MPI_Recv(buffer, buff_size, MPI_PACKED, 0, STD_TAG, MPI_COMM_WORLD, &status);
 
 		int pos = 0;
-		for (int j = 0; j < DNA_SECTIONS; j++){
+		for (int j = 0; j < DNA_SECTIONS; j++)
+		{
 			MPI_Unpack(buffer, buff_size, &pos, bases[j], MAX_DATABASE, MPI_CHAR, MPI_COMM_WORLD);
 			MPI_Unpack(buffer, buff_size, &pos, descs[j], MAX_WORDSIZE, MPI_CHAR, MPI_COMM_WORLD);
 		}
-		for (int j = 0; j < limit; j++){
+
+		for (int j = 0; j < limit; j++)
+		{
 			MPI_Unpack(buffer, buff_size, &pos, queries[j], MAX_SUBSTRING, MPI_CHAR, MPI_COMM_WORLD);
 			MPI_Unpack(buffer, buff_size, &pos, query_descs[j], MAX_WORDSIZE, MPI_CHAR, MPI_COMM_WORLD);
 		}
 
+		// Aplica o BMHS utilizando queries recebidas do root
 		solve_chunk(bases, descs, queries, limit, query_descs, query_results);
-		
+
+		// Envia o resultado do processo de volta ao root
 		int res_buff_size = limit * MAX_SUBSTRING;
 		char *res_buffer = (char*) malloc(sizeof(char) * res_buff_size);
 		must_alloc(res_buffer, "res_buffer");
 		pos = 0;
+
+		// Empacota em res_buffer as informações pra enviar de volta ao root
 		for (int i = 0; i < limit; i++)
 			MPI_Pack(query_results[i], MAX_SUBSTRING, MPI_CHAR, res_buffer, res_buff_size, &pos, MPI_COMM_WORLD);
 
-		MPI_Request req;
-		MPI_Isend(res_buffer, res_buff_size, MPI_PACKED, 0, STD_TAG, MPI_COMM_WORLD, &req);
+		MPI_Send(res_buffer, res_buff_size, MPI_PACKED, 0, STD_TAG, MPI_COMM_WORLD);
+
+		free(res_buffer);
+		res_buffer = NULL;
 	}
 
+	// libera e desponta os espaços de memória da aplicação
+	free_matrix((void**) bases, DNA_SECTIONS);
+	free_matrix((void**) descs, DNA_SECTIONS);
+	free_matrix((void**) queries, limit);
+	free_matrix((void**) query_descs, limit);
+	free_matrix((void**) query_results, limit);
+	free(buffer);
 
+	bases = NULL;
+	descs = NULL;
+	queries = NULL;
+	query_descs = NULL;
+	query_results = NULL;
+	buffer = NULL;
 
 	MPI_Finalize();
-
-	// char *query_results[NUM_QUERIES];
-
-	// int result, found;
-	// char aux[MAX_WORDSIZE];
-	// for (int i = rank; i < NUM_QUERIES; i += n_procs)
-	// {
-	// 	found = 0;
-	// 	query_results[i] = (char*) malloc(sizeof(char) * 1000);
-	// 	sprintf(query_results[i], "%s\n", queries_descs[i]);
-
-	// 	for (int j = 0; j < DNA_SECTIONS; j++) {
-	// 		result = bmhs(bases[j], queries[i]);
-	// 		if (result > 0) {
-	// 			sprintf(aux, "%s\n%i\n", descs[j], result);
-	// 			strcat(query_results[i], aux);
-	// 			found = 1;
-	// 		}
-	// 	}
-	// 	if (!found) {
-	// 		sprintf(aux, "NOT FOUND\n");
-	// 		strcat(query_results[i], aux);
-	// 	}
-	// }
-	
-
-	// for (int i = 0; i < NUM_QUERIES; i++)
-	// 	fprintf(fout, "%s", query_results[i]);
-	
-	
 	
 	return EXIT_SUCCESS;
 }
-
-// int main(int argc, char **argv) {
-
-// 	MPI_Init(&argc, &argv);
-
-// 	int rank;
-// 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-// 	FILE *fdatabase = fopen("dna.in", "r");
-// 	must_alloc(fdatabase, "fdatabase");
-
-// 	FILE *fquery = fopen("query.in", "r");
-// 	must_alloc(fquery, "fquery");
-
-// 	FILE *fout = fopen("dna.out", "w");
-// 	must_alloc(fout, "fout");
-
-// 	char *bases[DNA_SECTIONS];
-// 	char *descs[DNA_SECTIONS];
-
-// 	char *queries[NUM_QUERIES];
-// 	char *queries_descs[NUM_QUERIES];
-
-// 	read_database(fdatabase, bases, descs);
-// 	read_queries(fquery, queries, queries_descs);
-
-// 	char *query_results[NUM_QUERIES];
-
-
-// 	int result, found;
-// 	char aux[MAX_WORDSIZE];
-// 	for (int i = 0; i < NUM_QUERIES; i++)
-// 	{
-// 		found = 0;
-// 		query_results[i] = (char*) malloc(sizeof(char) * 1000);
-// 		sprintf(query_results[i], "%s\n", queries_descs[i]);
-
-// 		for (int j = 0; j < DNA_SECTIONS; j++) {
-// 			result = bmhs(bases[j], queries[i]);
-// 			if (result > 0) {
-// 				sprintf(aux, "%s\n%i\n", descs[j], result);
-// 				strcat(query_results[i], aux);
-// 				found = 1;
-// 			}
-// 		}
-// 		if (!found) {
-// 			sprintf(aux, "NOT FOUND\n");
-// 			strcat(query_results[i], aux);
-// 		}
-// 	}
-	
-
-// 	for (int i = 0; i < NUM_QUERIES; i++)
-// 		fprintf(fout, "%s", query_results[i]);
-	
-// 	for (int i = 0; i < NUM_QUERIES; i++){
-// 		free(queries[i]);
-// 		free(queries_descs[i]);
-// 		free(query_results[i]);
-// 	}
-
-// 	for (int i = 0; i < DNA_SECTIONS; i++){
-// 		free(bases[i]);
-// 		free(descs[i]);
-// 	}
-
-// 	fclose(fdatabase);
-// 	fclose(fquery);
-// 	fclose(fout);
-
-// 	MPI_Finalize();
-	
-// 	return EXIT_SUCCESS;
-// }
