@@ -1,4 +1,4 @@
-FLAGS=-g -O3
+FLAGS=-O3
 
 LIBS=-lm
 
